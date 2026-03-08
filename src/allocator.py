@@ -48,9 +48,6 @@ class RingThrusterAllocator:
         elif method == "distributed":
             return self._allocate_distributed(b)
 
-        elif method == "forward_equal":
-            return self._allocate_forward_equal(b)
-
         else:
             raise ValueError("Unknown allocation method")
 
@@ -79,10 +76,6 @@ class RingThrusterAllocator:
         return f
 
 
-    # ----------------------------------------------------------
-    # 1. Minimum energy (current method)
-    # ----------------------------------------------------------
-
     def _allocate_min_energy(self, b):
 
         A_working, working = self._get_working_matrix()
@@ -107,10 +100,6 @@ class RingThrusterAllocator:
 
         return self._reconstruct_full(res.x, working)
 
-
-    # ----------------------------------------------------------
-    # 2. Distributed thrust (use all tentacles)
-    # ----------------------------------------------------------
 
     def _allocate_distributed(self, b):
 
@@ -140,29 +129,6 @@ class RingThrusterAllocator:
         res = lsq_linear(A_reg, b_reg, bounds=(0.0, self.f_max))
 
         return self._reconstruct_full(res.x, working)
-
-
-    # ----------------------------------------------------------
-    # 3. Equal forward thrust (very simple)
-    # ----------------------------------------------------------
-
-    def _allocate_forward_equal(self, b):
-
-        Fx = b[0]
-
-        working = [i for i in range(self.N) if i not in self.broken_motors]
-
-        if not working:
-            return np.zeros(self.N)
-
-        f = np.zeros(self.N)
-
-        thrust_each = Fx / len(working)
-
-        for i in working:
-            f[i] = np.clip(thrust_each, 0.0, self.f_max)
-
-        return f
 
 
 def motors_to_wrench(f, theta, r, l):

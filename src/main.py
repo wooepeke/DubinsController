@@ -69,7 +69,7 @@ def main():
     l_thrusters = -0.05
     f_max = 1.0
     phi0 = 22.5
-    allocation_method = "distributed"  # Options: "min_energy", "distributed", "forward_equal"
+    allocation_method = "min_energy"  # Options: "min_energy", "distributed"
     
     # Specify which motors are broken (empty list means all motors are functional)
     # Example: broken_motors = [0, 3] would disable motors 0 and 3
