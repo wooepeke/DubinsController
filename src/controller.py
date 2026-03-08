@@ -2,7 +2,7 @@ import numpy as np
 from utils import quat_mul, quat_conj, quat_to_rot, normalize_quat
 
 class SE3Controller:
-    def __init__(self, m, I, b, Kr, Kv, Kq, Kw, Ki_omega=None, Kd_v=None, Kd_omega=None):
+    def __init__(self, m, I, b, Kr, Kv, Kq, Kw, Ki_omega=None, Kd_v=None, Kd_omega=None, r_cb=None, g=9.81):
         self.m = m
         self.I = I
         self.b = b
@@ -20,6 +20,10 @@ class SE3Controller:
         # Derivative gains (optional)
         self.Kd_v = Kd_v if Kd_v is not None else np.zeros((3, 3))
         self.Kd_omega = Kd_omega if Kd_omega is not None else np.zeros((3, 3))
+        
+        # Buoyancy compensation parameters
+        self.r_cb = r_cb if r_cb is not None else np.zeros(3)  # Center of buoyancy offset
+        self.g = g
         
         # State tracking for derivative action
         self.integral_e_omega = np.zeros(3)
@@ -62,7 +66,7 @@ class SE3Controller:
 
         return F_b
         
-    def compute_forces_hybrid(self, state, ref, T_cycle, T_burst):
+    def compute_forces_hybrid(self, state, ref, T_cycle, T_burst, dt=0.01):
         r, v, q, omega = state
         r_d, rdot_d, rddot_d, q_d, omega_d = ref
 
@@ -71,11 +75,25 @@ class SE3Controller:
         e_r = r - r_d
         e_v = v - rdot_d
 
+        # Derivative of velocity error (numerical differentiation)
+        if dt > 0:
+            de_v_dt = (e_v - self.prev_e_v) / dt
+        else:
+            de_v_dt = np.zeros(3)
+        self.prev_e_v = e_v.copy()
+
         duty = T_burst / T_cycle
         scale = 1.0 / duty
 
+        # Drag in inertial frame
+        D_I = R @ self.b @ R.T
+        drag_I = D_I @ v
+
         # Momentum-based burst force (in inertial frame)
+        # Include feedforward, drag compensation, and error feedback (scaled for burst duty cycle)
         F_I_burst = scale * (
+            self.m * rddot_d
+            + drag_I
             - self.Kr @ e_r
             - self.Kv @ e_v
         )
@@ -111,8 +129,14 @@ class SE3Controller:
 
         tau_control = -self.I @ (self.Kq @ e_R + self.Kw @ e_omega + self.Kd_omega @ de_R_dt)
         tau_gyro = np.cross(omega, self.I @ omega)
+        
+        # Feedforward compensation for buoyancy-induced torque (negate to counteract disturbance)
+        R = quat_to_rot(q)
+        F_buoyancy_I = np.array([0.0, 0.0, self.m/2 * self.g])
+        F_buoyancy_b = R.T @ F_buoyancy_I
+        tau_buoyancy_ff = -0.1 * np.cross(self.r_cb, F_buoyancy_b)
 
-        tau = tau_control + tau_gyro
+        tau = tau_control + tau_gyro + tau_buoyancy_ff
 
         return tau
 
@@ -145,8 +169,15 @@ class SE3Controller:
         tau_burst = scale * (
             - self.Kq @ e_R
             - self.Kw @ e_omega
-            - self.Kd_omega @ de_R_dt
         )
+        
+        # Feedforward compensation for buoyancy-induced torque (negate to counteract disturbance)
+        R = quat_to_rot(q)
+        F_buoyancy_I = np.array([0.0, 0.0, self.m/2 * self.g])
+        F_buoyancy_b = R.T @ F_buoyancy_I
+        tau_buoyancy_ff = 0.1 * np.cross(self.r_cb, F_buoyancy_b)
+
+        tau_burst += tau_buoyancy_ff
 
         return tau_burst
 

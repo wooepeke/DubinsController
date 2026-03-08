@@ -412,6 +412,8 @@ def plot_3d_thrusters(logs, theta, r, l=0.05, a=0.21, b=0.085, c=0.085, animate=
             motor_axes[i].grid(True, alpha=0.3)
             motor_axes[i].set_xlim(t_log[0], t_log[-1])
             motor_axes[i].tick_params(axis='both', labelsize=7)
+            motor_axes[i].set_ylim(0, 1.0)
+
             if i == 0:
                 motor_axes[i].set_title('Motor Forces', fontsize=10)
             if i == 7:

@@ -2,92 +2,169 @@ import numpy as np
 from scipy.optimize import lsq_linear
 
 
-
 class RingThrusterAllocator:
+
     def __init__(self, N, r, l, f_max, phi0=0.0, broken_motors=None):
-        """
-        N: number of thrusters
-        r: radial distance from z-axis (m)
-        l: x-offset from COM (forward/aft along body x-axis) (m)
-        f_max: max force per thruster (N)
-        phi0: initial phase angle (rad)
-        broken_motors: list of motor indices that are broken/disabled (e.g., [1, 3])
-        
-        Note: x-offset does NOT create moments when forces are purely in x-direction
-        (force is parallel to offset vector, no perpendicular component).
-        The offset is noted for geometry but doesn't affect force/torque allocation.
-        """
+
         self.N = N
         self.r = r
-        self.l = l  # Store for reference, but doesn't affect moment arms for x-direction forces
+        self.l = l
         self.f_max = f_max
         self.broken_motors = set(broken_motors) if broken_motors else set()
-        # Weight matrix: [Fx, Fy, Fz, tau_x, tau_y, tau_z]
-        # Fy and Fz should be minimized (can't be controlled with x-direction thrusters)
-        # tau_x should be minimized (can't be controlled with ring thrusters)
-        self.W = np.diag([1.0, 10.0, 10.0, 10.0, 5.0, 5.0])
 
-        self.theta = phi0 + 2 * np.pi * np.arange(N) / N
+        self.theta = phi0 + 2*np.pi*np.arange(N)/N
 
+        # Wrench mapping
         self.A = np.vstack([
-            np.ones(self.N),                 # Fx = sum of all forces
-            np.zeros(self.N),                # Fy = 0 (can't produce with x-direction thrusters)
-            np.zeros(self.N),                # Fz = 0 (can't produce with x-direction thrusters)
-            np.zeros(self.N),                # tau_x = 0 (moment arm perpendicular to force)
-            self.r * np.sin(self.theta),     # tau_y = r*sin(theta)*F
-            -self.r * np.cos(self.theta)     # tau_z = -r*cos(theta)*F
+            np.ones(self.N),
+            np.zeros(self.N),
+            np.zeros(self.N),
+            np.zeros(self.N),
+            r*np.sin(self.theta),
+            -r*np.cos(self.theta)
         ])
 
-    def allocate(self, Fd_B, tau_des):
-        """
-        Fd_B: [Fd_x, Fd_y, Fd_z] desired force in body frame (only Fd_x is relevant)
-        tau_des: [tau_x, tau_y, tau_z]
-        
-        Uses least-squares with regularization to encourage distributed thrust across all motors.
-        Fy, Fz, and tau_x are penalized to minimize unwanted motions.
-        Broken motors are forced to output zero force.
-        """
-        # Build the desired wrench vector (6 components)
-        # Thrusters can only control Fx, tau_y, tau_z
-        # We want to minimize Fy, Fz, and tau_x
+        self.W = np.diag([1.0, 0.0, 0.0, 0.0, 12.0, 5.0])
+
+
+    # ==========================================================
+    # Public interface
+    # ==========================================================
+
+    def allocate(self, Fd_B, tau_des, method="min_energy"):
+
         b = np.array([
-            Fd_B[0],       # Fx desired
-            0.0,           # Fy desired (should be zero)
-            0.0,           # Fz desired (should be zero)
-            0.0,           # tau_x desired (should be zero)
-            tau_des[1],    # tau_y desired
-            tau_des[2]     # tau_z desired
+            Fd_B[0],
+            0.0,
+            0.0,
+            0.0,
+            tau_des[1],
+            tau_des[2]
         ])
 
-        self.Aw = self.W @ self.A
-        bw = self.W @ b
-        
-        # Get indices of working (non-broken) motors
-        working_indices = [i for i in range(self.N) if i not in self.broken_motors]
-        
-        # If all motors are broken, return zero forces
-        if not working_indices:
-            return np.zeros(self.N)
-        
-        # Extract only the columns for working motors
-        A_working = self.Aw[:, working_indices]
-        
-        # Add regularization term
-        lambda_reg = 0.1
-        A_reg = np.vstack([A_working, np.sqrt(lambda_reg) * np.eye(len(working_indices))])
-        b_reg = np.hstack([bw, np.zeros(len(working_indices))])
-        
-        # Optimize only for working motors
-        res = lsq_linear(A_reg, b_reg, bounds=(0.0, self.f_max))
-        
-        # Reconstruct full force vector with zeros for broken motors
-        f_full = np.zeros(self.N)
-        for idx, working_idx in enumerate(working_indices):
-            f_full[working_idx] = res.x[idx]
-        
-        return f_full
+        if method == "min_energy":
+            return self._allocate_min_energy(b)
 
-    
+        elif method == "distributed":
+            return self._allocate_distributed(b)
+
+        elif method == "forward_equal":
+            return self._allocate_forward_equal(b)
+
+        else:
+            raise ValueError("Unknown allocation method")
+
+
+    # ==========================================================
+    # Optimization methods
+    # ==========================================================
+
+    def _get_working_matrix(self):
+
+        working = [i for i in range(self.N) if i not in self.broken_motors]
+
+        if not working:
+            return None, None
+
+        Aw = self.W @ self.A
+        return Aw[:, working], working
+
+
+    def _reconstruct_full(self, x, working):
+
+        f = np.zeros(self.N)
+        for i, idx in enumerate(working):
+            f[idx] = x[i]
+
+        return f
+
+
+    # ----------------------------------------------------------
+    # 1. Minimum energy (current method)
+    # ----------------------------------------------------------
+
+    def _allocate_min_energy(self, b):
+
+        A_working, working = self._get_working_matrix()
+        bw = self.W @ b
+
+        if A_working is None:
+            return np.zeros(self.N)
+
+        lambda_reg = 0.1
+
+        A_reg = np.vstack([
+            A_working,
+            np.sqrt(lambda_reg) * np.eye(len(working))
+        ])
+
+        b_reg = np.hstack([
+            bw,
+            np.zeros(len(working))
+        ])
+
+        res = lsq_linear(A_reg, b_reg, bounds=(0.0, self.f_max))
+
+        return self._reconstruct_full(res.x, working)
+
+
+    # ----------------------------------------------------------
+    # 2. Distributed thrust (use all tentacles)
+    # ----------------------------------------------------------
+
+    def _allocate_distributed(self, b):
+
+        A_working, working = self._get_working_matrix()
+        bw = self.W @ b
+
+        if A_working is None:
+            return np.zeros(self.N)
+
+        Nw = len(working)
+
+        # Penalize difference between motors
+        D = np.eye(Nw) - np.ones((Nw, Nw))/Nw
+
+        lambda_reg = 0.1
+
+        A_reg = np.vstack([
+            A_working,
+            np.sqrt(lambda_reg)*D
+        ])
+
+        b_reg = np.hstack([
+            bw,
+            np.zeros(Nw)
+        ])
+
+        res = lsq_linear(A_reg, b_reg, bounds=(0.0, self.f_max))
+
+        return self._reconstruct_full(res.x, working)
+
+
+    # ----------------------------------------------------------
+    # 3. Equal forward thrust (very simple)
+    # ----------------------------------------------------------
+
+    def _allocate_forward_equal(self, b):
+
+        Fx = b[0]
+
+        working = [i for i in range(self.N) if i not in self.broken_motors]
+
+        if not working:
+            return np.zeros(self.N)
+
+        f = np.zeros(self.N)
+
+        thrust_each = Fx / len(working)
+
+        for i in working:
+            f[i] = np.clip(thrust_each, 0.0, self.f_max)
+
+        return f
+
+
 def motors_to_wrench(f, theta, r, l):
     """
     Convert individual motor forces to body-frame wrench.

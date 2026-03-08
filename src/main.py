@@ -41,7 +41,11 @@ def main():
     a = 0.21    # Semi-axis along X (the tip)
     b = 0.085   # Semi-axis along Y (base)
     c = 0.085   # Semi-axis along Z (base)
-    m = 3.0     # Mass (kg)
+    m = 3.0 * 2     # Mass (kg)
+    rho = 1000      # Density of water (kg/m³)
+    volume = 3.0 * 10**(-3)  # Volume (m³) - estimated based on mass and density
+    r_cb = np.array([0.010, 0.0, 0.00]) 
+
     # Linear drag coefficients - different for power vs recovery stroke
     b_power_stroke = np.diag([0.34, 1.54, 1.54])  # Lower drag when tentacles contracted
     b_recovery_stroke = np.diag([2.5, 4.0, 4.0])  # Higher drag when tentacles extended
@@ -65,6 +69,7 @@ def main():
     l_thrusters = -0.05
     f_max = 1.0
     phi0 = 22.5
+    allocation_method = "distributed"  # Options: "min_energy", "distributed", "forward_equal"
     
     # Specify which motors are broken (empty list means all motors are functional)
     # Example: broken_motors = [0, 3] would disable motors 0 and 3
@@ -82,8 +87,8 @@ def main():
     # Controller gains - increased to overcome added angular drag
     Kr = 0.2 * np.eye(3)   # Position tracking gain - increased for better responsiveness
     Kv = 3.0 * np.eye(3)   # Velocity feedback gain - increased to use more available thrust
-    Kq = 0.8 * np.eye(3)   # Attitude control - further increased for better turning
-    Kw = 1.5 * np.eye(3)   # Angular velocity damping - increased for aggressive rotation
+    Kq = np.array([0.8, 0.8, 0.8]) * np.eye(3)   # Attitude control - further increased for better turning
+    Kw = np.array([1.5, 1.5, 1.5]) * np.eye(3)   # Angular velocity damping - increased for aggressive rotation
     Ki_omega = 0.0 * np.eye(3)
     Kd_v = 0.0 * np.eye(3)
     Kd_omega = 0.0 * np.eye(3)
@@ -98,13 +103,16 @@ def main():
         Kw=Kw,
         Ki_omega=Ki_omega,
         Kd_v=Kd_v,
-        Kd_omega=Kd_omega
+        Kd_omega=Kd_omega,
+        r_cb=r_cb,
+        g=9.81
     )
 
     # Target points - list of sequential targets to visit
     targets = [
-        np.array([0.5, 0.2, 0.0]),
-        np.array([-1.0, 0.5, 0.0])
+        np.array([1.0, 0.0, 0.0]),
+        np.array([1.0, 2.0, 0.0]),
+        np.array([0.0, 2.0, 0.0]),
     ]
     current_target_idx = 0
     target = targets[current_target_idx].copy()
@@ -174,7 +182,7 @@ def main():
             # Compute control forces ONCE at the start of power stroke
             Fb_burst, tau_burst = controller.compute(state, ref, T_cycle=tentacle_cycle_time, T_burst=tentacle_thrust_duration, dt=dt)
             # Allocate to motors and store
-            stored_f_motors = allocator.allocate(Fb_burst, tau_burst)
+            stored_f_motors = allocator.allocate(Fb_burst, tau_burst, method=allocation_method)
             power_stroke_times.append(t)  # Track power stroke timing
 
         # Get smooth thrust profile (0 to 1) for smooth force application
@@ -205,7 +213,7 @@ def main():
             rigid_body_dynamics,
             state,
             (Fb, tau),
-            (m, I, b_current, b_ang_current),
+            (m, I, b_current, b_ang_current, rho, volume, r_cb),
             dt
         )
 
